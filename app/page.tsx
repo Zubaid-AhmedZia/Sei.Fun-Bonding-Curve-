@@ -16,7 +16,8 @@ import {
 
 // 🔑 Pinata JWT – replace this with YOUR real JWT from Pinata dashboard.
 // e.g. "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-const PINATA_JWT = "REPLACE_WITH_YOUR_PINATA_JWT";
+const PINATA_JWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySW5mb3JtYXRpb24iOnsiaWQiOiJjMmVkN2I2Mi00MzJjLTQ4YzQtOWI5YS1kZTlmMjQ1YThmOWYiLCJlbWFpbCI6InRoZWNob3Nlbm9uZTAwNzY2NkBnbWFpbC5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwicGluX3BvbGljeSI6eyJyZWdpb25zIjpbeyJkZXNpcmVkUmVwbGljYXRpb25Db3VudCI6MSwiaWQiOiJGUkExIn0seyJkZXNpcmVkUmVwbGljYXRpb25Db3VudCI6MSwiaWQiOiJOWUMxIn1dLCJ2ZXJzaW9uIjoxfSwibWZhX2VuYWJsZWQiOmZhbHNlLCJzdGF0dXMiOiJBQ1RJVkUifSwiYXV0aGVudGljYXRpb25UeXBlIjoic2NvcGVkS2V5Iiwic2NvcGVkS2V5S2V5IjoiZDU4MjA0ZDY1MGVkZGFhYzE3Y2QiLCJzY29wZWRLZXlTZWNyZXQiOiIxMzRjODUzMzFiMmIxOWUwOWVmOGNlYjZiZTdmOTkyY2I4ZWFhOGQzMDkxZWE0NTFlZTJlZThhOTZlMGM2ZjliIiwiZXhwIjoxNzk1NTQyNDg0fQ.EhrfZOq5f2QrWD-b0UxqM_HKOIDWK4uad9DB-7X4T1U";
+
 type MemeToken = {
   name: string;
   symbol: string;
@@ -207,49 +208,76 @@ export default function HomePage() {
 
   const newTokens = [...tokens].reverse().slice(0, 4);
 
-  const renderTokenCard = (token: MemeToken, info?: TrendingInfo, badge?: string) => (
-    <Link
-      key={`${token.tokenAddress}-${info?.token || "card"}`}
-      href={`/token/${token.tokenAddress}`}
-      className="group relative flex min-w-[240px] flex-col gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 shadow-[0_0_30px_rgba(8,145,178,0.15)] transition hover:scale-[1.01] hover:border-cyan-400/60 hover:bg-white/10"
-    >
-      {badge && (
-        <span className="w-max rounded-full border border-white/15 bg-white/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-200">
-          {badge}
-        </span>
-      )}
-      <div className="flex items-center gap-3">
-        {token.tokenImageUrl && (
-          <img
-            src={token.tokenImageUrl}
-            alt={token.name}
-            className="h-10 w-10 rounded-full object-cover"
-          />
+  // Helper to calculate progress
+  const getProgress = (fundingRaised: bigint, isLaunched: boolean) => {
+    if (isLaunched) return 100;
+    const goal = ethers.parseEther("0.01");
+    const pct = Number((fundingRaised * 10000n) / goal) / 100;
+    return pct > 100 ? 100 : pct;
+  };
+
+  const renderTokenCard = (token: MemeToken, info?: TrendingInfo, badge?: string) => {
+    const progress = getProgress(token.fundingRaised, token.isLaunched);
+
+    return (
+      <Link
+        key={`${token.tokenAddress}-${info?.token || "card"}`}
+        href={`/token/${token.tokenAddress}`}
+        className="group relative flex min-w-[240px] flex-col gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 shadow-[0_0_30px_rgba(8,145,178,0.15)] transition hover:scale-[1.01] hover:border-cyan-400/60 hover:bg-white/10"
+      >
+        {badge && (
+          <span className="w-max rounded-full border border-white/15 bg-white/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-200">
+            {badge}
+          </span>
         )}
-        <div>
-          <div className="text-sm font-semibold text-white">
-            {token.name} ({token.symbol})
-          </div>
-          <div className="text-[11px] text-slate-400">
-            {token.tokenAddress.slice(0, 6)}...{token.tokenAddress.slice(-4)}
+        <div className="flex items-center gap-3">
+          {token.tokenImageUrl && (
+            <img
+              src={token.tokenImageUrl}
+              alt={token.name}
+              className="h-10 w-10 rounded-full object-cover"
+            />
+          )}
+          <div>
+            <div className="text-sm font-semibold text-white">
+              {token.name} ({token.symbol})
+            </div>
+            <div className="text-[11px] text-slate-400">
+              {token.tokenAddress.slice(0, 6)}...{token.tokenAddress.slice(-4)}
+            </div>
           </div>
         </div>
-      </div>
-      <p className="line-clamp-2 text-xs text-slate-400">
-        {token.description || "No description provided."}
-      </p>
-      <div className="flex items-center justify-between text-[11px] text-slate-300">
-        <span>Volume (24h)</span>
-        <span>{info ? `${info.totalVolumeEth.toFixed(4)} ETH` : "—"}</span>
-      </div>
-      <div className="flex items-center justify-between text-[11px] text-slate-300">
-        <span>Status</span>
-        <span className={token.isLaunched ? "text-emerald-400" : "text-yellow-300"}>
-          {token.isLaunched ? "Launched" : "Bonding Curve"}
-        </span>
-      </div>
-    </Link>
-  );
+        <p className="line-clamp-2 text-xs text-slate-400">
+          {token.description || "No description provided."}
+        </p>
+        <div className="flex items-center justify-between text-[11px] text-slate-300">
+          <span>Volume (24h)</span>
+          <span>{info ? `${info.totalVolumeEth.toFixed(4)} ETH` : "—"}</span>
+        </div>
+
+        {/* Progress Bar */}
+        <div className="space-y-1">
+          <div className="flex justify-between text-[10px] text-slate-400">
+            <span>Bonding Curve</span>
+            <span className="text-white">{progress.toFixed(1)}%</span>
+          </div>
+          <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-slate-800/70">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-cyan-400 via-emerald-400 to-amber-400 shadow-[0_0_10px_rgba(56,189,248,0.5)] transition-all duration-500"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between text-[11px] text-slate-300 mt-1">
+          <span>Status</span>
+          <span className={token.isLaunched ? "text-emerald-400" : "text-yellow-300"}>
+            {token.isLaunched ? "Launched" : "Bonding Curve"}
+          </span>
+        </div>
+      </Link>
+    )
+  };
 
   const renderTabContent = () => {
     if (homeTab === "trending") {
@@ -368,11 +396,10 @@ export default function HomePage() {
                 <button
                   key={tab}
                   onClick={() => setHomeTab(tab)}
-                  className={`rounded-full px-3 py-1.5 capitalize transition ${
-                    homeTab === tab
-                      ? "bg-gradient-to-r from-cyan-400 to-fuchsia-500 text-slate-950 shadow-sm"
-                      : "text-slate-300 hover:text-white"
-                  }`}
+                  className={`rounded-full px-3 py-1.5 capitalize transition ${homeTab === tab
+                    ? "bg-gradient-to-r from-cyan-400 to-fuchsia-500 text-slate-950 shadow-sm"
+                    : "text-slate-300 hover:text-white"
+                    }`}
                 >
                   {tab}
                 </button>
@@ -551,52 +578,65 @@ export default function HomePage() {
             </p>
           ) : (
             <div className="grid gap-4 md:grid-cols-2">
-              {tokens.map(t => (
-                <div
-                  key={t.tokenAddress}
-                  className="flex flex-col gap-4 rounded-3xl border border-white/10 bg-white/5 p-4 shadow-[0_0_30px_rgba(236,72,153,0.15)] transition hover:scale-[1.01] hover:border-fuchsia-400/60"
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-3">
-                      {t.tokenImageUrl && (
-                        <img
-                          src={t.tokenImageUrl}
-                          alt={t.name}
-                          className="h-12 w-12 rounded-2xl border border-white/10 object-cover"
-                        />
-                      )}
-                      <div>
-                        <p className="text-sm font-semibold text-white">
-                          {t.name} ({t.symbol})
-                        </p>
-                        <p className="text-[11px] text-slate-400">
-                          {t.tokenAddress.slice(0, 6)}...{t.tokenAddress.slice(-4)}
-                        </p>
+              {tokens.map(t => {
+                const progress = getProgress(t.fundingRaised, t.isLaunched);
+                return (
+                  <div
+                    key={t.tokenAddress}
+                    className="flex flex-col gap-4 rounded-3xl border border-white/10 bg-white/5 p-4 shadow-[0_0_30px_rgba(236,72,153,0.15)] transition hover:scale-[1.01] hover:border-fuchsia-400/60"
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-center gap-3">
+                        {t.tokenImageUrl && (
+                          <img
+                            src={t.tokenImageUrl}
+                            alt={t.name}
+                            className="h-12 w-12 rounded-2xl border border-white/10 object-cover"
+                          />
+                        )}
+                        <div>
+                          <p className="text-sm font-semibold text-white">
+                            {t.name} ({t.symbol})
+                          </p>
+                          <p className="text-[11px] text-slate-400">
+                            {t.tokenAddress.slice(0, 6)}...{t.tokenAddress.slice(-4)}
+                          </p>
+                        </div>
                       </div>
-                    </div>
-                    <span
-                      className={`rounded-full border px-2 py-1 text-[10px] ${
-                        t.isLaunched
+                      <span
+                        className={`rounded-full border px-2 py-1 text-[10px] ${t.isLaunched
                           ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-200"
                           : "border-amber-500/30 bg-amber-500/15 text-amber-200"
-                      }`}
+                          }`}
+                      >
+                        {t.isLaunched ? "Launched" : "Bonding Curve"}
+                      </span>
+                    </div>
+                    <p className="line-clamp-2 text-xs text-slate-400">{t.description}</p>
+
+                    {/* Progress Bar */}
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[10px] text-slate-400">
+                        <span>Bonding Curve</span>
+                        <span className="text-white">{progress.toFixed(1)}%</span>
+                      </div>
+                      <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-slate-800/70">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-cyan-400 via-emerald-400 to-amber-400 shadow-[0_0_10px_rgba(56,189,248,0.5)] transition-all duration-500"
+                          style={{ width: `${progress}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    <Link
+                      href={`/token/${t.tokenAddress}`}
+                      className="rounded-full bg-gradient-to-r from-cyan-400 to-fuchsia-500 px-3 py-2 text-center text-xs font-semibold text-slate-950 shadow-lg transition hover:brightness-110"
                     >
-                      {t.isLaunched ? "Launched" : "Bonding Curve"}
-                    </span>
+                      View / Trade
+                    </Link>
                   </div>
-                  <p className="line-clamp-2 text-xs text-slate-400">{t.description}</p>
-                  <div className="flex items-center justify-between text-xs text-slate-300">
-                    <span>Raised</span>
-                    <span>{ethers.formatEther(t.fundingRaised)} ETH</span>
-                  </div>
-                  <Link
-                    href={`/token/${t.tokenAddress}`}
-                    className="rounded-full bg-gradient-to-r from-cyan-400 to-fuchsia-500 px-3 py-2 text-center text-xs font-semibold text-slate-950 shadow-lg transition hover:brightness-110"
-                  >
-                    View / Trade
-                  </Link>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </section>

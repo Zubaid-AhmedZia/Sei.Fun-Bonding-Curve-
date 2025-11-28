@@ -6,6 +6,7 @@ const TradeSchema = new Schema(
     token: { type: String, index: true },
     hash: String,
     side: { type: String, enum: ["buy", "sell"], index: true },
+    user: { type: String, index: true }, // address of the trader
     tokens: Number, // how many tokens
     eth: Number,    // ETH spent/received
     timestamp: Number // ms since epoch
