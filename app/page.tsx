@@ -7,16 +7,25 @@ import Link from "next/link";
 import axios from "axios";
 import Navbar from "@/components/Navbar";
 import { getBrowserProvider, getFactoryReadOnly, getFactoryContract } from "@/lib/ethersClient";
+import { getTransactionError } from "@/lib/errorHandler";
 import {
   SparklesIcon,
   PlusCircleIcon,
   ArrowTrendingUpIcon,
   PhotoIcon,
 } from "@heroicons/react/24/outline";
+import TransactionErrorModal from "@/components/TransactionErrorModal";
+
+const DEFAULT_CURVE_FEE_BPS = 100n;
+const DEFAULT_BPS_DENOMINATOR = 10_000n;
+
+// Token creation fee constant (matches BondingCurveSEI.sol: 0.000001 ether)
+const MEMETOKEN_CREATION_FEE = ethers.parseEther("0.000001");
 
 // 🔑 Pinata JWT – replace this with YOUR real JWT from Pinata dashboard.
 // e.g. "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-const PINATA_JWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySW5mb3JtYXRpb24iOnsiaWQiOiJjMmVkN2I2Mi00MzJjLTQ4YzQtOWI5YS1kZTlmMjQ1YThmOWYiLCJlbWFpbCI6InRoZWNob3Nlbm9uZTAwNzY2NkBnbWFpbC5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwicGluX3BvbGljeSI6eyJyZWdpb25zIjpbeyJkZXNpcmVkUmVwbGljYXRpb25Db3VudCI6MSwiaWQiOiJGUkExIn0seyJkZXNpcmVkUmVwbGljYXRpb25Db3VudCI6MSwiaWQiOiJOWUMxIn1dLCJ2ZXJzaW9uIjoxfSwibWZhX2VuYWJsZWQiOmZhbHNlLCJzdGF0dXMiOiJBQ1RJVkUifSwiYXV0aGVudGljYXRpb25UeXBlIjoic2NvcGVkS2V5Iiwic2NvcGVkS2V5S2V5IjoiZDU4MjA0ZDY1MGVkZGFhYzE3Y2QiLCJzY29wZWRLZXlTZWNyZXQiOiIxMzRjODUzMzFiMmIxOWUwOWVmOGNlYjZiZTdmOTkyY2I4ZWFhOGQzMDkxZWE0NTFlZTJlZThhOTZlMGM2ZjliIiwiZXhwIjoxNzk1NTQyNDg0fQ.EhrfZOq5f2QrWD-b0UxqM_HKOIDWK4uad9DB-7X4T1U";
+const PINATA_JWT: string =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySW5mb3JtYXRpb24iOnsiaWQiOiJjMmVkN2I2Mi00MzJjLTQ4YzQtOWI5YS1kZTlmMjQ1YThmOWYiLCJlbWFpbCI6InRoZWNob3Nlbm9uZTAwNzY2NkBnbWFpbC5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwicGluX3BvbGljeSI6eyJyZWdpb25zIjpbeyJkZXNpcmVkUmVwbGljYXRpb25Db3VudCI6MSwiaWQiOiJGUkExIn0seyJkZXNpcmVkUmVwbGljYXRpb25Db3VudCI6MSwiaWQiOiJOWUMxIn1dLCJ2ZXJzaW9uIjoxfSwibWZhX2VuYWJsZWQiOmZhbHNlLCJzdGF0dXMiOiJBQ1RJVkUifSwiYXV0aGVudGljYXRpb25UeXBlIjoic2NvcGVkS2V5Iiwic2NvcGVkS2V5S2V5IjoiZDU4MjA0ZDY1MGVkZGFhYzE3Y2QiLCJzY29wZWRLZXlTZWNyZXQiOiIxMzRjODUzMzFiMmIxOWUwOWVmOGNlYjZiZTdmOTkyY2I4ZWFhOGQzMDkxZWE0NTFlZTJlZThhOTZlMGM2ZjliIiwiZXhwIjoxNzk1NTQyNDg0fQ.EhrfZOq5f2QrWD-b0UxqM_HKOIDWK4uad9DB-7X4T1U";
 
 type MemeToken = {
   name: string;
@@ -58,6 +67,24 @@ export default function HomePage() {
   const [uploadingImage, setUploadingImage] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
+  // Transaction error modal state
+  const [errorModal, setErrorModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+  }>({
+    isOpen: false,
+    title: "",
+    message: "",
+  });
+
+  // Optional initial buy on creation
+  const [initialBuyQty, setInitialBuyQty] = useState<string>("");
+  const [initialBuyCost, setInitialBuyCost] = useState<bigint | null>(null);
+  const [initialBuyLoading, setInitialBuyLoading] = useState(false);
+  const [curveFeeBps, setCurveFeeBps] = useState<bigint>(DEFAULT_CURVE_FEE_BPS);
+  const [curveFeeDenominator, setCurveFeeDenominator] = useState<bigint>(DEFAULT_BPS_DENOMINATOR);
+
   const connect = async () => {
     const provider = getBrowserProvider();
     const accounts = await provider.send("eth_requestAccounts", []);
@@ -74,6 +101,18 @@ export default function HomePage() {
       setTokens(res as MemeToken[]);
       const fee: bigint = await factory.MEMETOKEN_CREATION_FEE();
       setCreationFee(fee);
+      try {
+        const [feeBpsValue, bpsDenomValue] = await Promise.all([
+          factory.FEE_BPS(),
+          factory.BPS_DENOMINATOR(),
+        ]);
+        setCurveFeeBps(feeBpsValue);
+        setCurveFeeDenominator(bpsDenomValue === 0n ? DEFAULT_BPS_DENOMINATOR : bpsDenomValue);
+      } catch (err) {
+        console.error("Failed to load curve fee config", err);
+        setCurveFeeBps(DEFAULT_CURVE_FEE_BPS);
+        setCurveFeeDenominator(DEFAULT_BPS_DENOMINATOR);
+      }
     } catch (e) {
       console.error(e);
     } finally {
@@ -92,12 +131,12 @@ export default function HomePage() {
 
   const loadEthUsd = async () => {
     try {
-      const res = await fetch("https://api.coinbase.com/v2/prices/ETH-USD/spot");
+      const res = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=sei-network&vs_currencies=usd");
       const json = await res.json();
-      const price = Number(json?.data?.amount);
+      const price = Number(json?.["sei-network"]?.usd);
       if (!Number.isNaN(price)) setEthUsd(price);
     } catch (e) {
-      console.error("Failed to fetch ETH price", e);
+      console.error("Failed to fetch SEI price", e);
     }
   };
 
@@ -107,26 +146,115 @@ export default function HomePage() {
     loadEthUsd();
   }, []);
 
+  // Estimate ETH cost for optional initial buy (same math as token detail bonding-curve buy)
+  useEffect(() => {
+    const run = async () => {
+      if (!initialBuyQty || Number(initialBuyQty) <= 0) {
+        setInitialBuyCost(null);
+        return;
+      }
+      setInitialBuyLoading(true);
+      try {
+        const factory = getFactoryReadOnly();
+        const amountRaw = ethers.parseUnits(initialBuyQty, 18);
+        const cost: bigint = await factory.calculateCost(0n, amountRaw);
+        const denom = curveFeeDenominator === 0n ? DEFAULT_BPS_DENOMINATOR : curveFeeDenominator;
+        const feePortion = (cost * curveFeeBps) / denom;
+        setInitialBuyCost(cost + feePortion);
+      } catch (err) {
+        console.error("Failed to estimate initial buy cost", err);
+        setInitialBuyCost(null);
+      } finally {
+        setInitialBuyLoading(false);
+      }
+    };
+    run();
+  }, [initialBuyQty, curveFeeBps, curveFeeDenominator]);
+
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!account) return alert("Connect wallet first");
     setTxPending(true);
     try {
       const factory = await getFactoryContract();
-      const fee: bigint = await factory.MEMETOKEN_CREATION_FEE();
+      // Use constant value instead of contract call
       const tx = await factory.createMemeToken(
         form.name,
         form.symbol,
         form.imageUrl, // ✅ still using imageUrl as before
         form.description,
-        { value: fee }
+        { value: MEMETOKEN_CREATION_FEE }
       );
       await tx.wait();
+
+      // Optional initial buy on the fresh bonding curve (separate tx, same as token detail buy)
+      const initialQtyNumber = Number(initialBuyQty);
+      if (initialQtyNumber > 0 && initialBuyCost && initialBuyCost > 0n) {
+        try {
+          const factoryReadonly = getFactoryReadOnly();
+          const allTokens: MemeToken[] = await factoryReadonly.getAllMemeTokens();
+          const latest = allTokens[allTokens.length - 1];
+          const newTokenAddr = latest?.tokenAddress;
+
+          if (newTokenAddr) {
+            const buyTx = await factory.buyMemeToken(
+              newTokenAddr,
+              ethers.parseUnits(initialBuyQty, 0),
+              { value: initialBuyCost }
+            );
+            const buyReceipt = await buyTx.wait();
+            
+            // Log the initial buy trade to database (same as token detail page)
+            try {
+              await axios.post("/api/trades", {
+                token: newTokenAddr,
+                hash: buyReceipt.hash,
+                side: "buy",
+                tokens: initialQtyNumber,
+                eth: Number(ethers.formatEther(initialBuyCost)),
+                timestamp: Date.now(),
+                user: account,
+              });
+            } catch (tradeErr) {
+              console.error("Failed to log initial buy trade", tradeErr);
+              // Don't block the flow if trade logging fails
+            }
+          }
+        } catch (buyErr: any) {
+          // Only log non-user-rejection errors
+          if (!buyErr?.code || (buyErr.code !== 4001 && buyErr.code !== -32603)) {
+            console.error("Initial buy after creation failed", buyErr);
+          }
+          
+          const errorInfo = getTransactionError(buyErr);
+          if (errorInfo.isRejection) {
+            // User rejected initial buy - that's fine, token was created
+            return;
+          }
+          setErrorModal({
+            isOpen: true,
+            title: "Initial Buy Failed",
+            message: "Token was created successfully, but the optional initial buy failed. You can still buy from the token page.",
+          });
+        }
+      }
+
       setForm({ name: "", symbol: "", imageUrl: "", description: "" });
+      setInitialBuyQty("");
+      setInitialBuyCost(null);
       await loadTokens();
     } catch (err: any) {
-      console.error(err);
-      alert(err?.reason || "Create failed");
+      // Only log non-user-rejection errors to console
+      if (!err?.code || (err.code !== 4001 && err.code !== -32603)) {
+        console.error("Transaction error:", err);
+      }
+      
+      const errorInfo = getTransactionError(err);
+      setErrorModal({
+        isOpen: true,
+        title: errorInfo.title,
+        message: errorInfo.message,
+      });
     } finally {
       setTxPending(false);
     }
@@ -211,7 +339,7 @@ export default function HomePage() {
   // Helper to calculate progress
   const getProgress = (fundingRaised: bigint, isLaunched: boolean) => {
     if (isLaunched) return 100;
-    const goal = ethers.parseEther("0.01");
+    const goal = ethers.parseEther("115000"); // 115,000 SEI goal
     const pct = Number((fundingRaised * 10000n) / goal) / 100;
     return pct > 100 ? 100 : pct;
   };
@@ -252,7 +380,7 @@ export default function HomePage() {
         </p>
         <div className="flex items-center justify-between text-[11px] text-slate-300">
           <span>Volume (24h)</span>
-          <span>{info ? `${info.totalVolumeEth.toFixed(4)} ETH` : "—"}</span>
+          <span>{info ? `${info.totalVolumeEth.toFixed(4)} SEI` : "—"}</span>
         </div>
 
         {/* Progress Bar */}
@@ -318,6 +446,12 @@ export default function HomePage() {
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-[#050816] via-[#050319] to-[#020617] text-slate-50">
+      <TransactionErrorModal
+        isOpen={errorModal.isOpen}
+        onClose={() => setErrorModal({ isOpen: false, title: "", message: "" })}
+        title={errorModal.title}
+        message={errorModal.message}
+      />
       <Navbar account={account} onConnect={connect} onDisconnect={disconnect} />
       <div className="mx-auto max-w-6xl space-y-10 px-4 py-8">
         {/* HERO */}
@@ -366,7 +500,7 @@ export default function HomePage() {
             <div className="flex items-center justify-between">
               <span className="text-slate-400">24h Volume</span>
               <span className="text-lg font-semibold text-white">
-                {totalVolumeEth24h.toFixed(4)} ETH{" "}
+                {totalVolumeEth24h.toFixed(4)} SEI{" "}
                 {totalVolumeUsd24h !== null && (
                   <span className="text-sm text-slate-400">
                     ({totalVolumeUsd24h.toLocaleString(undefined, { maximumFractionDigits: 0 })} USD)
@@ -501,10 +635,37 @@ export default function HomePage() {
                 />
               </div>
 
+              {/* Optional initial buy on the bonding curve */}
+              <div className="space-y-2">
+                <label className="text-xs text-slate-400">
+                  Optional initial buy (tokens)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  placeholder="e.g. 10000"
+                  className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm text-white backdrop-blur focus:border-cyan-400/60 focus:outline-none"
+                  value={initialBuyQty}
+                  onChange={e => setInitialBuyQty(e.target.value)}
+                />
+                <p className="text-[11px] text-slate-400">
+                  Buy some of your own token immediately on the bonding curve. This is optional –
+                  leave empty to just create the token.
+                </p>
+                <div className="text-[11px] text-slate-400">
+                  {initialBuyLoading
+                    ? "Estimating initial buy cost..."
+                    : initialBuyQty && Number(initialBuyQty) > 0 && initialBuyCost
+                      ? `Initial buy cost (incl. fee): ${ethers.formatEther(initialBuyCost)} SEI`
+                      : "Enter a token amount to see how much SEI is required."}
+                </div>
+              </div>
+
               <div className="flex flex-col items-start gap-2 text-xs text-slate-400 md:flex-row md:items-center md:justify-between">
                 <span>
                   Creation fee:{" "}
-                  {creationFee ? `${ethers.formatEther(creationFee)} ETH` : "loading..."}
+                  {creationFee ? `${ethers.formatEther(creationFee)} SEI` : "loading..."}
                 </span>
                 <button
                   disabled={txPending}
@@ -555,7 +716,7 @@ export default function HomePage() {
                   <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">
                     <p className="text-slate-400">Creation fee</p>
                     <p className="mt-1 font-semibold text-white">
-                      {creationFee ? `${ethers.formatEther(creationFee)} ETH` : "—"}
+                      {creationFee ? `${ethers.formatEther(creationFee)} SEI` : "—"}
                     </p>
                   </div>
                 </div>

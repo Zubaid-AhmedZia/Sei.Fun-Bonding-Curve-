@@ -8,7 +8,8 @@ import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router01.sol";
 
 /// @title Meme Token Factory with Exponential Bonding Curve + Uniswap Launch
 /// @notice Production-style version with 1% trading fee, listing fee, and safety hardening.
-/// @dev IMPORTANT: For production, REMOVE withdrawFees() and only use withdrawProtocolFees().
+/// @dev IMPORTANT: On Sei EVM, the native asset is SEI (still 18 decimals).
+///      For production, REMOVE withdrawFees() and only use withdrawProtocolFees().
 contract TokenFactory {
     // --- Events ---
     event MemeTokenCreated(
@@ -35,7 +36,7 @@ contract TokenFactory {
 
     event TokenLaunched(
         address indexed tokenAddress,
-        uint256 ethForLP,
+        uint256 ethForLP,          // on Sei this is SEI for LP
         uint256 listingFeeTaken,
         uint256 timestamp
     );
@@ -48,7 +49,7 @@ contract TokenFactory {
         string symbol;
         string description;
         string tokenImageUrl;
-        uint256 fundingRaised; // ETH reserved for LP (net of trading fees)
+        uint256 fundingRaised; // SEI reserved for LP (net of trading fees)
         address tokenAddress;
         address creatorAddress;
         bool isLaunched;
@@ -64,7 +65,7 @@ contract TokenFactory {
     mapping(address => uint256) public curveSupply; // raw units sold via curve (1e18-based)
 
     // --- Fees ---
-    uint256 public constant MEMETOKEN_CREATION_FEE = 0.000001 ether;
+    uint256 public constant MEMETOKEN_CREATION_FEE = 0.000001 ether; // in SEI
     uint256 public constant FEE_BPS = 100; // 1% in basis points
     uint256 public constant BPS_DENOMINATOR = 10_000;
 
@@ -77,17 +78,23 @@ contract TokenFactory {
     // --- Tokenomics Constants ---
     uint256 public constant DECIMALS = 10 ** 18;
     uint256 public constant MAX_SUPPLY = 1_000_000 * DECIMALS;
-    uint256 public constant INIT_SUPPLY = (MAX_SUPPLY * 20) / 100; // 20% for LP, minted at token creation
+    uint256 public constant INIT_SUPPLY = (MAX_SUPPLY * 20) / 100; // 20% for LP, minted at token creation (200k)
 
-    // Bonding curve parameters (must be calibrated off-chain for your target market cap)
-    // uint256 public constant INITIAL_PRICE = 30_000 * 10 ** 9;
-    // uint256 public constant K = 8 * 10 ** 15; // curvature (Q18). LOWER THIS IN PRODUCTION.
-    // Bonding curve parameters (calibrated off-chain)
-    uint256 public constant INITIAL_PRICE = 991_370_064; // wei per token at s = 0  (~9.9137e-10 ETH)
-    uint256 public constant K = 4_900_862_993_591; // curvature, Q18-scaled
+    // --- Bonding curve parameters (calibrated for Sei) ---
+    // Design:
+    // - Total supply: 1,000,000
+    // - 80% (800,000) sold on curve
+    // - 20% (200,000) for LP
+    // - Curve raises 115,000 SEI by the time 800k are sold
+    // - LP at launch: 200,000 tokens + 115,000 SEI
+    // - DEX price at launch: 0.575 SEI/token
+    // - MC at launch: 575,000 SEI (~69k USD when SEI ≈ $0.12)
+    uint256 public constant INITIAL_PRICE = 11_400_755_737_022_590; // ~0.0114007557 SEI per token at s = 0
+    uint256 public constant K             = 4_900_862_993_591;      // curvature, Q18
 
-    /// @notice ETH goal at which token graduates to Uniswap.
-    uint256 public constant MEMECOIN_FUNDING_GOAL = 0.01 ether;
+    /// @notice SEI goal at which token graduates to Uniswap (amount raised by curve).
+    ///         115,000 SEI * 1e18 (wei) = 115_000 ether.
+    uint256 public constant MEMECOIN_FUNDING_GOAL = 115_000 ether;
 
     // --- Reentrancy Guard ---
     uint256 private constant _NOT_ENTERED = 1;
@@ -105,7 +112,6 @@ contract TokenFactory {
         require(msg.sender == owner, "Not owner");
         _;
     }
-
     // Uniswap Sepolia
     // address public constant UNISWAP_FACTORY = 0xF62c03E08ada871A0bEb309762E260a7a6a880E6;
     // address public constant UNISWAP_ROUTER  = 0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3;
@@ -263,18 +269,11 @@ contract TokenFactory {
 
     // --- Pre-launch Buy & Sell ---
 
-    /// @notice Buy `tokenQty` whole tokens from the bonding curve for `tokenAddr`.
-    /// @dev msg.value must equal curve cost + 1% fee. Reverts if token already launched.
-    /// @notice Buy up to `tokenQty` whole tokens from the bonding curve for `tokenAddr`.
-    /// @dev
-    /// - If `tokenQty` exceeds remaining curve supply, it will be partially filled.
-    /// - Only the cost for actually minted tokens is kept; the rest of msg.value is refunded.
-    /// - May trigger launch if ETH goal is hit or curve supply is fully sold.
     /// @notice Buy up to `tokenQty` whole tokens from the bonding curve for `tokenAddr`.
     /// @dev
     /// - If `tokenQty` exceeds remaining curve supply, it will be partially filled.
     /// - Only the cost for actually minted tokens is kept; any extra ETH is refunded.
-    /// - May trigger launch if ETH goal is hit or curve supply is fully sold.
+    /// - May trigger launch if SEI goal is hit or curve supply is fully sold.
     function buyMemeToken(
         address tokenAddr,
         uint256 tokenQty
@@ -311,8 +310,8 @@ contract TokenFactory {
         uint256 fee = (curveCost * FEE_BPS) / BPS_DENOMINATOR;
         uint256 totalRequired = curveCost + fee;
 
-        // User must at least send enough ETH for the actual number of tokens being bought
-        require(msg.value >= totalRequired, "Insufficient ETH sent");
+        // User must at least send enough SEI for the actual number of tokens being bought
+        require(msg.value >= totalRequired, "Insufficient SEI sent");
 
         // Accounting
         protocolFeeBalance += fee;
@@ -331,7 +330,7 @@ contract TokenFactory {
             block.timestamp
         );
 
-        // Refund any excess ETH (e.g. user asked for more than available)
+        // Refund any excess SEI (e.g. user asked for more than available)
         if (msg.value > totalRequired) {
             uint256 excess = msg.value - totalRequired;
             (bool success, ) = msg.sender.call{value: excess}("");
@@ -339,8 +338,8 @@ contract TokenFactory {
         }
 
         // Graduation conditions:
-        //  - ETH goal hit, OR
-        //  - full curve supply sold
+        //  - SEI goal hit, OR
+        //  - full curve supply sold (800k tokens)
         if (
             !mt.isLaunched &&
             (mt.fundingRaised >= MEMECOIN_FUNDING_GOAL ||
@@ -368,12 +367,12 @@ contract TokenFactory {
             );
         }
 
-        // Return the actual ETH spent (excluding refund) for convenience
+        // Return the actual SEI spent (excluding refund) for convenience
         return totalRequired;
     }
 
     /// @notice Sell `tokenQty` whole tokens back to the bonding curve.
-    /// @dev Returns NET ETH refunded (after 1% fee). Reverts if already launched.
+    /// @dev Returns NET SEI refunded (after 1% fee). Reverts if already launched.
     function sellMemeToken(
         address tokenAddr,
         uint256 tokenQty
@@ -394,7 +393,7 @@ contract TokenFactory {
         require(currentRaw >= qtyRaw, "Curve supply too low");
 
         uint256 refund = calculateRefund(currentRaw, qtyRaw);
-        require(mt.fundingRaised >= refund, "Insufficient curve ETH");
+        require(mt.fundingRaised >= refund, "Insufficient curve SEI");
 
         uint256 fee = (refund * FEE_BPS) / BPS_DENOMINATOR;
         uint256 netRefund = refund - fee;
@@ -406,7 +405,7 @@ contract TokenFactory {
         token.burn(qtyRaw, msg.sender);
 
         (bool success, ) = msg.sender.call{value: netRefund}("");
-        require(success, "ETH transfer failed");
+        require(success, "SEI transfer failed");
 
         emit TokenSold(
             tokenAddr,
@@ -420,12 +419,12 @@ contract TokenFactory {
 
     // --- Uniswap Launch Helpers ---
     function _launchOnUniswap(address tokenAddr, uint256 ethAmount) internal {
-        require(ethAmount > 0, "No ETH for LP");
+        require(ethAmount > 0, "No SEI for LP");
 
         IUniswapV2Factory factory = IUniswapV2Factory(uniswapFactory);
         IUniswapV2Router01 router = IUniswapV2Router01(uniswapRouter);
 
-        address weth = router.WETH();
+        address weth = router.WETH(); // on Sei this should be WSEI
         address pair = factory.getPair(tokenAddr, weth);
         if (pair == address(0)) {
             pair = factory.createPair(tokenAddr, weth);
@@ -443,7 +442,7 @@ contract TokenFactory {
             tokenAddr,
             INIT_SUPPLY,
             INIT_SUPPLY, // min tokens
-            ethAmount, // min ETH
+            ethAmount,   // min SEI
             address(this),
             block.timestamp
         );
@@ -466,10 +465,10 @@ contract TokenFactory {
         protocolFeeBalance = 0;
 
         (bool success, ) = to.call{value: amount}("");
-        require(success, "ETH transfer failed");
+        require(success, "SEI transfer failed");
     }
 
-    /// @notice TESTING ONLY: withdraw ALL ETH from the contract (including LP ETH).
+    /// @notice TESTING ONLY: withdraw ALL SEI from the contract (including LP SEI).
     /// @dev DO NOT SHIP THIS IN PRODUCTION.
     function withdrawFees(address payable to) external onlyOwner nonReentrant {
         require(to != address(0), "zero");
@@ -477,6 +476,6 @@ contract TokenFactory {
         require(bal > 0, "no balance");
 
         (bool success, ) = to.call{value: bal}("");
-        require(success, "ETH transfer failed");
+        require(success, "SEI transfer failed");
     }
 }

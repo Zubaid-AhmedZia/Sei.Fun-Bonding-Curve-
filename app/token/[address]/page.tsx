@@ -11,6 +11,9 @@ import {
   getFactoryContract,
   getFactoryReadOnly,
 } from "@/lib/ethersClient";
+import { getTransactionError } from "@/lib/errorHandler";
+import TransactionErrorModal from "@/components/TransactionErrorModal";
+import { tokenAbi } from "@/lib/abi/Token";
 import {
   getDexQuoteBuyExactOut,
   getDexQuoteSell,
@@ -18,7 +21,7 @@ import {
   sellTokenDex,
   checkAllowance,
   approveToken,
-} from "@/lib/uniswap";
+} from "@/lib/dragonswap";
 import Navbar from "@/components/Navbar";
 import {
   ArrowTrendingUpIcon,
@@ -31,7 +34,7 @@ import {
 import AdvancedChart from "@/components/AdvancedChart";
 
 // 👉 Bonding curve funding goal (must match your on-chain graduation threshold)
-const FUNDING_GOAL_WEI = ethers.parseEther("0.01"); // e.g. 1 ETH to graduate & launch
+const FUNDING_GOAL_WEI = ethers.parseEther("15"); // 115,000 SEI to graduate & launch
 const DEFAULT_CURVE_FEE_BPS = 100n; // 1%
 const DEFAULT_BPS_DENOMINATOR = 10_000n;
 
@@ -261,6 +264,11 @@ export default function TokenPage() {
   // 🔹 curve supply for market cap
   const [curveSupply, setCurveSupply] = useState<bigint | null>(null);
 
+  // 🔹 initial price and total supply for initial market cap
+  const [initialPrice, setInitialPrice] = useState<bigint | null>(null);
+  const [totalSupply, setTotalSupply] = useState<bigint | null>(null);
+  const [maxSupply, setMaxSupply] = useState<bigint | null>(null);
+
   // 🔹 top holders (for bottom tab)
   const [holders, setHolders] = useState<Holder[]>([]);
   const [holdersLoading, setHoldersLoading] = useState(false);
@@ -271,6 +279,17 @@ export default function TokenPage() {
   const [curveFeeDenominator, setCurveFeeDenominator] = useState<bigint>(
     DEFAULT_BPS_DENOMINATOR,
   );
+
+  // Transaction error modal state
+  const [errorModal, setErrorModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+  }>({
+    isOpen: false,
+    title: "",
+    message: "",
+  });
 
   const connect = async () => {
     const provider = getBrowserProvider();
@@ -323,6 +342,38 @@ export default function TokenPage() {
         console.error("[loadToken] failed to fetch fee config", e);
         setCurveFeeBps(DEFAULT_CURVE_FEE_BPS);
         setCurveFeeDenominator(DEFAULT_BPS_DENOMINATOR);
+      }
+
+      // 🔹 Fetch initial price from factory
+      try {
+        const initialPriceGetter = (factory as any).INITIAL_PRICE;
+        if (typeof initialPriceGetter === "function") {
+          const initialPriceValue: bigint = await initialPriceGetter();
+          console.log("[loadToken] INITIAL_PRICE:", initialPriceValue.toString());
+          setInitialPrice(initialPriceValue);
+        }
+      } catch (e) {
+        console.error("[loadToken] failed to fetch INITIAL_PRICE", e);
+        setInitialPrice(null);
+      }
+
+      // 🔹 Fetch total supply and max supply from token contract
+      try {
+        const rpc = process.env.NEXT_PUBLIC_SEPOLIA_RPC!;
+        const provider = new ethers.JsonRpcProvider(rpc);
+        const tokenContract = new ethers.Contract(tokenAddress, tokenAbi, provider);
+        const [totalSupplyValue, maxSupplyValue]: [bigint, bigint] = await Promise.all([
+          tokenContract.totalSupply(),
+          tokenContract.maxSupply(),
+        ]);
+        console.log("[loadToken] totalSupply:", totalSupplyValue.toString());
+        console.log("[loadToken] maxSupply:", maxSupplyValue.toString());
+        setTotalSupply(totalSupplyValue);
+        setMaxSupply(maxSupplyValue);
+      } catch (e) {
+        console.error("[loadToken] failed to fetch token supply", e);
+        setTotalSupply(null);
+        setMaxSupply(null);
       }
     }
 
@@ -377,7 +428,7 @@ export default function TokenPage() {
       setLoadingCost(true);
       try {
         if (isDexMode) {
-          // DEX Quote: how much ETH is needed to buy `qty` tokens
+          // DEX Quote: how much SEI is needed to buy `qty` tokens
           const rpc = process.env.NEXT_PUBLIC_SEPOLIA_RPC!;
           const provider = new ethers.JsonRpcProvider(rpc);
           const amountOut = ethers.parseUnits(qty, 18);
@@ -416,7 +467,7 @@ export default function TokenPage() {
       }
       try {
         if (isDexMode) {
-          // DEX Quote: Sell Tokens -> Get ETH
+          // DEX Quote: Sell Tokens -> Get SEI
           const rpc = process.env.NEXT_PUBLIC_SEPOLIA_RPC!;
           const provider = new ethers.JsonRpcProvider(rpc);
           const amountIn = ethers.parseUnits(sellQty, 18);
@@ -454,19 +505,19 @@ export default function TokenPage() {
   }, [tokenAddress]);
 
   useEffect(() => {
-    const fetchEthPrice = async () => {
+    const fetchSeiPrice = async () => {
       try {
         const res = await fetch(
-          "https://api.coinbase.com/v2/prices/ETH-USD/spot",
+          "https://api.coingecko.com/api/v3/simple/price?ids=sei-network&vs_currencies=usd",
         );
         const json = await res.json();
-        const price = Number(json?.data?.amount);
+        const price = Number(json?.["sei-network"]?.usd);
         if (!Number.isNaN(price)) setEthUsd(price);
       } catch (e) {
-        console.error("Failed to fetch ETH price", e);
+        console.error("Failed to fetch SEI price", e);
       }
     };
-    fetchEthPrice();
+    fetchSeiPrice();
   }, []);
 
 
@@ -482,12 +533,12 @@ export default function TokenPage() {
 
       if (isDexMode) {
         // DEX Buy
-        // estimatedCost is the ETH amount needed to buy `qty` tokens
+        // estimatedCost is the SEI amount needed to buy `qty` tokens
         // We'll add a slippage tolerance, say 1%? Or just pass estimatedCost as max?
-        // swapETHForExactTokens(amountOut, path, to, deadline)
-        // But our helper `buyTokenDex` uses `swapExactETHForTokens`.
-        // Let's use `buyTokenDex` which swaps EXACT ETH for MIN tokens.
-        // So we treat `estimatedCost` as the ETH we are spending.
+        // swapSEIForExactTokens(amountOut, path, to, deadline)
+        // But our helper `buyTokenDex` uses `swapExactSEIForTokens`.
+        // Let's use `buyTokenDex` which swaps EXACT SEI for MIN tokens.
+        // So we treat `estimatedCost` as the SEI we are spending.
         // And `qty` as the expected tokens.
         // We should recalculate min tokens out based on slippage.
 
@@ -528,8 +579,17 @@ export default function TokenPage() {
       setEstimatedCost(null);
       await loadToken();
     } catch (err: any) {
-      console.error(err);
-      alert(err?.reason || "Buy failed");
+      // Only log non-user-rejection errors to console
+      if (!err?.code || (err.code !== 4001 && err.code !== -32603)) {
+        console.error("Transaction error:", err);
+      }
+      
+      const errorInfo = getTransactionError(err);
+      setErrorModal({
+        isOpen: true,
+        title: errorInfo.title,
+        message: errorInfo.message,
+      });
     } finally {
       setPending(false);
     }
@@ -587,8 +647,17 @@ export default function TokenPage() {
       setEstRefund(null);
       await loadToken();
     } catch (err: any) {
-      console.error(err);
-      alert(err?.reason || "Sell failed");
+      // Only log non-user-rejection errors to console
+      if (!err?.code || (err.code !== 4001 && err.code !== -32603)) {
+        console.error("Transaction error:", err);
+      }
+      
+      const errorInfo = getTransactionError(err);
+      setErrorModal({
+        isOpen: true,
+        title: errorInfo.title,
+        message: errorInfo.message,
+      });
     } finally {
       setPending(false);
     }
@@ -605,7 +674,7 @@ export default function TokenPage() {
     );
   }
 
-  // ----- Build price points from trades: price = eth / tokens -----
+  // ----- Build price points from trades: price = sei / tokens -----
   const sortedTrades = trades.slice().sort((a, b) => a.timestamp - b.timestamp);
   const selectedRange = TIME_RANGE_CONFIG[timeRange];
   const priceEvents = buildPriceEvents(sortedTrades);
@@ -633,12 +702,16 @@ export default function TokenPage() {
   );
   const volumeUsd24h = ethUsd !== null ? volumeEth24h * ethUsd : null;
 
-  // 👉 current price (ETH per token) from last candle or last trade
+  // 👉 current price (SEI per token) from last candle or last trade, fallback to initial price
   let lastPriceEth: number | null = null;
   if (candles.length > 0) {
     lastPriceEth = candles[candles.length - 1].close;
   } else if (priceEvents.length > 0) {
     lastPriceEth = priceEvents[priceEvents.length - 1].y;
+  } else if (initialPrice !== null) {
+    // Use initial price from bonding curve when no trades exist
+    // INITIAL_PRICE is in wei per token, convert to SEI
+    lastPriceEth = Number(ethers.formatEther(initialPrice));
   }
 
   const lastPriceUsd =
@@ -651,10 +724,23 @@ export default function TokenPage() {
       ? Number(ethers.formatUnits(curveSupply, 18))
       : null;
 
-  const marketCapEth =
-    lastPriceEth !== null && curveSupplyTokens !== null
-      ? lastPriceEth * curveSupplyTokens
-      : null;
+  // Market cap: use current price * max supply for initial market cap, or total supply for current market cap
+  // If no trades, use initial price * max supply for initial market cap
+  let marketCapEth: number | null = null;
+  if (lastPriceEth !== null) {
+    // For initial market cap (no trades), use maxSupply
+    if (priceEvents.length === 0 && maxSupply !== null) {
+      const maxSupplyTokens = Number(ethers.formatUnits(maxSupply, 18));
+      marketCapEth = lastPriceEth * maxSupplyTokens;
+    } else if (totalSupply !== null) {
+      // Use total supply for current market cap calculation
+      const totalSupplyTokens = Number(ethers.formatUnits(totalSupply, 18));
+      marketCapEth = lastPriceEth * totalSupplyTokens;
+    } else if (curveSupplyTokens !== null && !token?.isLaunched) {
+      // Fallback to curve supply for bonding curve phase
+      marketCapEth = lastPriceEth * curveSupplyTokens;
+    }
+  }
 
   const marketCapUsd =
     marketCapEth !== null && ethUsd !== null
@@ -742,6 +828,12 @@ export default function TokenPage() {
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-[#050816] via-[#050319] to-[#020617] text-slate-50">
+      <TransactionErrorModal
+        isOpen={errorModal.isOpen}
+        onClose={() => setErrorModal({ isOpen: false, title: "", message: "" })}
+        title={errorModal.title}
+        message={errorModal.message}
+      />
       <Navbar account={account} onConnect={connect} onDisconnect={disconnect} />
       <div className="mx-auto max-w-6xl space-y-8 px-4 py-8">
         {/* ------- TOP: Token header + stat boxes ------- */}
@@ -813,13 +905,15 @@ export default function TokenPage() {
                   </p>
                   <p className="mt-1 text-sm font-semibold text-white">
                     {lastPriceEth !== null
-                      ? `${lastPriceEth.toFixed(8)} ETH`
+                      ? `${lastPriceEth.toFixed(8)} SEI`
                       : "—"}
                   </p>
                   <p className="text-[10px] text-slate-400">
                     {lastPriceUsd !== null
                       ? `≈ $${lastPriceUsd.toFixed(4)}`
-                      : "Awaiting first trade"}
+                      : priceEvents.length === 0 && initialPrice !== null
+                        ? "Initial price"
+                        : "Awaiting first trade"}
                   </p>
                 </div>
 
@@ -830,13 +924,15 @@ export default function TokenPage() {
                   </p>
                   <p className="mt-1 text-sm font-semibold text-white">
                     {marketCapEth !== null
-                      ? `${marketCapEth.toFixed(4)} ETH`
+                      ? `${marketCapEth.toFixed(4)} SEI`
                       : "—"}
                   </p>
                   <p className="text-[10px] text-slate-400">
                     {marketCapUsd !== null
                       ? `≈ $${marketCapUsd.toFixed(2)}`
-                      : "Based on curve supply"}
+                      : priceEvents.length === 0 && initialPrice !== null && maxSupply !== null
+                        ? "Initial market cap"
+                        : "Based on curve supply"}
                   </p>
                 </div>
 
@@ -846,7 +942,7 @@ export default function TokenPage() {
                     24h Volume
                   </p>
                   <p className="mt-1 text-sm font-semibold text-white">
-                    {volumeEth24h.toFixed(4)} ETH
+                    {volumeEth24h.toFixed(4)} SEI
                   </p>
                   <p className="text-[10px] text-slate-400">
                     {volumeUsd24h !== null
@@ -888,7 +984,7 @@ export default function TokenPage() {
                   </span>
                   <span className="inline-flex items-center gap-1 rounded-full bg-slate-900/80 px-2 py-0.5 text-[10px] font-medium text-amber-200">
                     <SparklesIcon className="h-3 w-3 text-amber-300" />
-                    {ethers.formatEther(token.fundingRaised)} / {ethers.formatEther(FUNDING_GOAL_WEI)} ETH
+                    {ethers.formatEther(token.fundingRaised)} / {ethers.formatEther(FUNDING_GOAL_WEI)} SEI
                   </span>
                 </div>
                 <div className="mt-1 relative h-3 w-full overflow-hidden rounded-full bg-slate-800/70 shadow-inner">
@@ -911,7 +1007,7 @@ export default function TokenPage() {
                       token.fundingRaised,
                     )} / ${ethers.formatEther(
                       FUNDING_GOAL_WEI,
-                    )} ETH to graduate.`}
+                    )} SEI to graduate.`}
                 </p>
                 <p className="mt-1 text-[10px] text-slate-500">
                   Sei · Bonding curve analytics
@@ -965,12 +1061,12 @@ export default function TokenPage() {
           <div className="rounded-3xl border border-white/10 bg-white/5 p-5 shadow-[0_0_30px_rgba(34,197,94,0.2)] backdrop-blur">
             <div className="flex items-center gap-2 text-sm font-semibold text-white">
               <ArrowTrendingUpIcon className="h-4 w-4 text-emerald-300" />
-              {isDexMode ? "Buy on DEX (Uniswap)" : "Buy on bonding curve"}
+              {isDexMode ? "Buy on DEX (DragonSwap)" : "Buy on bonding curve"}
             </div>
             <p className="mt-2 text-xs text-slate-400">
               {isDexMode
-                ? "Swap ETH for tokens via the Uniswap pool once liquidity is live."
-                : "Choose how many tokens you want to buy. Cost is computed from the curve and paid in ETH."}
+                ? "Swap SEI for tokens via the DragonSwap pool once liquidity is live."
+                : "Choose how many tokens you want to buy. Cost is computed from the curve and paid in SEI."}
             </p>
             <label className="mt-4 block text-xs text-slate-400">
               Amount ({token.symbol})
@@ -987,7 +1083,7 @@ export default function TokenPage() {
               {loadingCost
                 ? "Estimating cost..."
                 : estimatedCost
-                  ? `Estimated cost (incl. ${curveFeePercentLabel}% fee): ${ethers.formatEther(estimatedCost)} ETH`
+                  ? `Estimated cost (incl. ${curveFeePercentLabel}% fee): ${ethers.formatEther(estimatedCost)} SEI`
                   : isDexMode
                     ? "Enter amount to see DEX quote (pool must have liquidity)."
                     : "Enter amount to see cost"}
@@ -1004,12 +1100,12 @@ export default function TokenPage() {
           <div className="rounded-3xl border border-white/10 bg-white/5 p-5 shadow-[0_0_30px_rgba(239,68,68,0.2)] backdrop-blur">
             <div className="flex items-center gap-2 text-sm font-semibold text-white">
               <ArrowDownRightIcon className="h-4 w-4 text-rose-300" />
-              {isDexMode ? "Sell on DEX (Uniswap)" : "Sell back to bonding curve"}
+              {isDexMode ? "Sell on DEX (DragonSwap)" : "Sell back to bonding curve"}
             </div>
             {!isDexMode ? (
               <>
                 <p className="mt-2 text-xs text-slate-400">
-                  Sell tokens back before launch and receive ETH from the curve.
+                  Sell tokens back before launch and receive SEI from the curve.
                 </p>
                 <label className="mt-4 block text-xs text-slate-400">
                   Amount ({token.symbol})
@@ -1028,7 +1124,7 @@ export default function TokenPage() {
                     : estRefund
                       ? `Estimated refund: ${ethers.formatEther(
                         estRefund,
-                      )} ETH`
+                      )} SEI`
                       : "Enter amount to see refund"}
                 </div>
                 <button
@@ -1042,7 +1138,7 @@ export default function TokenPage() {
             ) : (
               <>
                 <p className="mt-2 text-xs text-slate-400">
-                  Sell your tokens for ETH via the Uniswap pool. Approval will be requested once if needed.
+                  Sell your tokens for SEI via the DragonSwap pool. Approval will be requested once if needed.
                 </p>
                 <label className="mt-4 block text-xs text-slate-400">
                   Amount ({token.symbol})
@@ -1061,7 +1157,7 @@ export default function TokenPage() {
                     : estRefund
                       ? `Estimated proceeds: ${ethers.formatEther(
                         estRefund,
-                      )} ETH`
+                      )} SEI`
                       : "Enter amount to see DEX quote"}
                 </div>
                 <button
@@ -1117,7 +1213,7 @@ export default function TokenPage() {
                     <tr>
                       <th className="pb-2 text-left">Side</th>
                       <th className="pb-2 text-left">Tokens</th>
-                      <th className="pb-2 text-left">ETH</th>
+                      <th className="pb-2 text-left">SEI</th>
                       <th className="pb-2 text-left">Time</th>
                       <th className="pb-2 text-left">Tx</th>
                     </tr>
@@ -1145,7 +1241,7 @@ export default function TokenPage() {
                             {t.tokens.toFixed(2)} {token.symbol}
                           </td>
                           <td className="py-2 text-slate-200">
-                            {t.eth.toFixed(4)} ETH
+                            {t.eth.toFixed(4)} SEI
                           </td>
                           <td className="py-2 text-slate-400">
                             {new Date(t.timestamp).toLocaleTimeString()}
@@ -1153,7 +1249,7 @@ export default function TokenPage() {
                           <td className="py-2">
                             {t.hash ? (
                               <a
-                                href={`https://sepolia.etherscan.io/tx/${t.hash}`}
+                                href={`https://seitrace.com/tx/${t.hash}`}
                                 target="_blank"
                                 rel="noreferrer"
                                 className="inline-flex items-center gap-1 rounded-full border border-white/15 bg-white/5 px-2 py-0.5 text-[10px] text-cyan-200 transition hover:border-cyan-400/40 hover:text-white"
